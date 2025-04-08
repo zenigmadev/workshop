@@ -1,0 +1,383 @@
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - terraform/**
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - group: terraform-credentials
+  # Bu değişken grubu Azure DevOps'ta oluşturulmalı ve aşağıdaki değişkenleri içermeli:
+  # ARM_CLIENT_ID: Azure Service Principal Client ID
+  # ARM_CLIENT_SECRET: Azure Service Principal Client Secret
+  # ARM_SUBSCRIPTION_ID: Azure Subscription ID
+  # ARM_TENANT_ID: Azure Tenant ID
+  
+  - name: terraformVersion
+    value: 'latest'
+  - name: workingDirectory
+    value: '$(System.DefaultWorkingDirectory)/terraform'
+  - name: backendServiceArm
+    value: 'Azure-Service-Connection'
+  - name: backendResourceGroup
+    value: 'terraform-state-rg'
+  - name: backendStorageAccount
+    value: 'tfstate$(uniqueString)'
+  - name: backendContainer
+    value: 'tfstate'
+  - name: backendKey
+    value: 'terraform.tfstate'
+
+stages:
+- stage: Validate
+  displayName: 'Terraform Validation'
+  jobs:
+  - job: Validate
+    displayName: 'Terraform Validate'
+    steps:
+    - task: TerraformInstaller@0
+      displayName: 'Terraform Kurulumu'
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+    
+    - bash: |
+        echo "##[section]Terraform Sürümü"
+        terraform version
+      displayName: 'Terraform Sürümünü Kontrol Et'
+      workingDirectory: '$(workingDirectory)'
+    
+    - bash: |
+        echo "##[section]Terraform Init"
+        terraform init -backend=false
+      displayName: 'Terraform Init (Backend Olmadan)'
+      workingDirectory: '$(workingDirectory)'
+    
+    - bash: |
+        echo "##[section]Terraform Format"
+        terraform fmt -check -recursive
+      displayName: 'Terraform Format Kontrolü'
+      workingDirectory: '$(workingDirectory)'
+      continueOnError: true
+    
+    - bash: |
+        echo "##[section]Terraform Validate"
+        terraform validate
+      displayName: 'Terraform Validate'
+      workingDirectory: '$(workingDirectory)'
+
+- stage: Plan
+  displayName: 'Terraform Plan'
+  dependsOn: Validate
+  jobs:
+  - job: Plan
+    displayName: 'Terraform Plan'
+    steps:
+    - task: TerraformInstaller@0
+      displayName: 'Terraform Kurulumu'
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+    
+    - task: AzureCLI@2
+      displayName: 'Azure CLI ile Backend Hazırlığı'
+      inputs:
+        azureSubscription: '$(backendServiceArm)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Resource Group oluştur (yoksa)
+          az group create --name $(backendResourceGroup) --location eastus
+          
+          # Storage Account oluştur (yoksa)
+          az storage account create \
+            --name $(backendStorageAccount) \
+            --resource-group $(backendResourceGroup) \
+            --kind StorageV2 \
+            --sku Standard_LRS \
+            --https-only true \
+            --allow-blob-public-access false
+          
+          # Container oluştur (yoksa)
+          az storage container create \
+            --name $(backendContainer) \
+            --account-name $(backendStorageAccount) \
+            --auth-mode login
+    
+    - bash: |
+        echo "##[section]Terraform Init"
+        terraform init \
+          -backend-config="resource_group_name=$(backendResourceGroup)" \
+          -backend-config="storage_account_name=$(backendStorageAccount)" \
+          -backend-config="container_name=$(backendContainer)" \
+          -backend-config="key=$(backendKey)"
+      displayName: 'Terraform Init (Backend İle)'
+      workingDirectory: '$(workingDirectory)'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+    
+    - bash: |
+        echo "##[section]Terraform Plan - Dev Ortamı"
+        terraform plan \
+          -var-file="environments/dev/terraform.tfvars" \
+          -out=dev.tfplan
+      displayName: 'Terraform Plan - Dev'
+      workingDirectory: '$(workingDirectory)'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+    
+    - task: PublishPipelineArtifact@1
+      displayName: 'Plan Dosyasını Artifact Olarak Kaydet'
+      inputs:
+        targetPath: '$(workingDirectory)/dev.tfplan'
+        artifact: 'terraform-plan-dev'
+        publishLocation: 'pipeline'
+
+- stage: Apply_Dev
+  displayName: 'Terraform Apply - Dev'
+  dependsOn: Plan
+  jobs:
+  - deployment: ApplyDev
+    displayName: 'Terraform Apply - Dev'
+    environment: 'Development'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: TerraformInstaller@0
+            displayName: 'Terraform Kurulumu'
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+          
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Plan Dosyasını İndir'
+            inputs:
+              buildType: 'current'
+              artifactName: 'terraform-plan-dev'
+              targetPath: '$(workingDirectory)'
+          
+          - bash: |
+              echo "##[section]Terraform Init"
+              terraform init \
+                -backend-config="resource_group_name=$(backendResourceGroup)" \
+                -backend-config="storage_account_name=$(backendStorageAccount)" \
+                -backend-config="container_name=$(backendContainer)" \
+                -backend-config="key=$(backendKey)"
+            displayName: 'Terraform Init (Backend İle)'
+            workingDirectory: '$(workingDirectory)'
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+          
+          - bash: |
+              echo "##[section]Terraform Apply - Dev Ortamı"
+              terraform apply -auto-approve dev.tfplan
+            displayName: 'Terraform Apply - Dev'
+            workingDirectory: '$(workingDirectory)'
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+- stage: Plan_Test
+  displayName: 'Terraform Plan - Test'
+  dependsOn: Apply_Dev
+  jobs:
+  - job: PlanTest
+    displayName: 'Terraform Plan - Test'
+    steps:
+    - task: TerraformInstaller@0
+      displayName: 'Terraform Kurulumu'
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+    
+    - bash: |
+        echo "##[section]Terraform Init"
+        terraform init \
+          -backend-config="resource_group_name=$(backendResourceGroup)" \
+          -backend-config="storage_account_name=$(backendStorageAccount)" \
+          -backend-config="container_name=$(backendContainer)" \
+          -backend-config="key=test.$(backendKey)"
+      displayName: 'Terraform Init (Backend İle)'
+      workingDirectory: '$(workingDirectory)'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+    
+    - bash: |
+        echo "##[section]Terraform Plan - Test Ortamı"
+        terraform plan \
+          -var-file="environments/test/terraform.tfvars" \
+          -out=test.tfplan
+      displayName: 'Terraform Plan - Test'
+      workingDirectory: '$(workingDirectory)'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+    
+    - task: PublishPipelineArtifact@1
+      displayName: 'Plan Dosyasını Artifact Olarak Kaydet'
+      inputs:
+        targetPath: '$(workingDirectory)/test.tfplan'
+        artifact: 'terraform-plan-test'
+        publishLocation: 'pipeline'
+
+- stage: Apply_Test
+  displayName: 'Terraform Apply - Test'
+  dependsOn: Plan_Test
+  jobs:
+  - deployment: ApplyTest
+    displayName: 'Terraform Apply - Test'
+    environment: 'Test'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: TerraformInstaller@0
+            displayName: 'Terraform Kurulumu'
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+          
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Plan Dosyasını İndir'
+            inputs:
+              buildType: 'current'
+              artifactName: 'terraform-plan-test'
+              targetPath: '$(workingDirectory)'
+          
+          - bash: |
+              echo "##[section]Terraform Init"
+              terraform init \
+                -backend-config="resource_group_name=$(backendResourceGroup)" \
+                -backend-config="storage_account_name=$(backendStorageAccount)" \
+                -backend-config="container_name=$(backendContainer)" \
+                -backend-config="key=test.$(backendKey)"
+            displayName: 'Terraform Init (Backend İle)'
+            workingDirectory: '$(workingDirectory)'
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+          
+          - bash: |
+              echo "##[section]Terraform Apply - Test Ortamı"
+              terraform apply -auto-approve test.tfplan
+            displayName: 'Terraform Apply - Test'
+            workingDirectory: '$(workingDirectory)'
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+- stage: Plan_Prod
+  displayName: 'Terraform Plan - Production'
+  dependsOn: Apply_Test
+  jobs:
+  - job: PlanProd
+    displayName: 'Terraform Plan - Production'
+    steps:
+    - task: TerraformInstaller@0
+      displayName: 'Terraform Kurulumu'
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+    
+    - bash: |
+        echo "##[section]Terraform Init"
+        terraform init \
+          -backend-config="resource_group_name=$(backendResourceGroup)" \
+          -backend-config="storage_account_name=$(backendStorageAccount)" \
+          -backend-config="container_name=$(backendContainer)" \
+          -backend-config="key=prod.$(backendKey)"
+      displayName: 'Terraform Init (Backend İle)'
+      workingDirectory: '$(workingDirectory)'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+    
+    - bash: |
+        echo "##[section]Terraform Plan - Production Ortamı"
+        terraform plan \
+          -var-file="environments/prod/terraform.tfvars" \
+          -out=prod.tfplan
+      displayName: 'Terraform Plan - Production'
+      workingDirectory: '$(workingDirectory)'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+    
+    - task: PublishPipelineArtifact@1
+      displayName: 'Plan Dosyasını Artifact Olarak Kaydet'
+      inputs:
+        targetPath: '$(workingDirectory)/prod.tfplan'
+        artifact: 'terraform-plan-prod'
+        publishLocation: 'pipeline'
+
+- stage: Apply_Prod
+  displayName: 'Terraform Apply - Production'
+  dependsOn: Plan_Prod
+  jobs:
+  - deployment: ApplyProd
+    displayName: 'Terraform Apply - Production'
+    environment: 'Production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: TerraformInstaller@0
+            displayName: 'Terraform Kurulumu'
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+          
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Plan Dosyasını İndir'
+            inputs:
+              buildType: 'current'
+              artifactName: 'terraform-plan-prod'
+              targetPath: '$(workingDirectory)'
+          
+          - bash: |
+              echo "##[section]Terraform Init"
+              terraform init \
+                -backend-config="resource_group_name=$(backendResourceGroup)" \
+                -backend-config="storage_account_name=$(backendStorageAccount)" \
+                -backend-config="container_name=$(backendContainer)" \
+                -backend-config="key=prod.$(backendKey)"
+            displayName: 'Terraform Init (Backend İle)'
+            workingDirectory: '$(workingDirectory)'
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+          
+          - bash: |
+              echo "##[section]Terraform Apply - Production Ortamı"
+              terraform apply -auto-approve prod.tfplan
+            displayName: 'Terraform Apply - Production'
+            workingDirectory: '$(workingDirectory)'
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)

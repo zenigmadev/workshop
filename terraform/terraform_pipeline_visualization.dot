@@ -1,0 +1,133 @@
+digraph G {
+    // Graph settings
+    rankdir=TB;
+    compound=true;
+    node [shape=box, style=filled, fillcolor=lightblue, fontname="Arial", fontsize=12];
+    edge [fontname="Arial", fontsize=10];
+    
+    // Stages
+    subgraph cluster_stages {
+        label="Azure DevOps Pipeline Stages";
+        style=filled;
+        color=lightgrey;
+        
+        // Validation Stage
+        subgraph cluster_validate {
+            label="Validate Stage";
+            style=filled;
+            color=lightblue;
+            
+            validate_init [label="Terraform Init\n(Backend Olmadan)"];
+            validate_fmt [label="Terraform Format"];
+            validate_validate [label="Terraform Validate"];
+            
+            validate_init -> validate_fmt -> validate_validate;
+        }
+        
+        // Plan Stage - Dev
+        subgraph cluster_plan_dev {
+            label="Plan Stage - Dev";
+            style=filled;
+            color=lightgreen;
+            
+            plan_init [label="Terraform Init\n(Backend İle)"];
+            plan_dev [label="Terraform Plan\n(Dev Ortamı)"];
+            plan_artifact [label="Plan Dosyasını\nArtifact Olarak Kaydet"];
+            
+            plan_init -> plan_dev -> plan_artifact;
+        }
+        
+        // Apply Stage - Dev
+        subgraph cluster_apply_dev {
+            label="Apply Stage - Dev";
+            style=filled;
+            color=lightyellow;
+            
+            apply_dev_init [label="Terraform Init\n(Backend İle)"];
+            apply_dev_download [label="Plan Dosyasını İndir"];
+            apply_dev_apply [label="Terraform Apply\n(Dev Ortamı)"];
+            
+            apply_dev_download -> apply_dev_init -> apply_dev_apply;
+        }
+        
+        // Plan Stage - Test
+        subgraph cluster_plan_test {
+            label="Plan Stage - Test";
+            style=filled;
+            color=lightgreen;
+            
+            plan_test_init [label="Terraform Init\n(Backend İle)"];
+            plan_test [label="Terraform Plan\n(Test Ortamı)"];
+            plan_test_artifact [label="Plan Dosyasını\nArtifact Olarak Kaydet"];
+            
+            plan_test_init -> plan_test -> plan_test_artifact;
+        }
+        
+        // Apply Stage - Test
+        subgraph cluster_apply_test {
+            label="Apply Stage - Test";
+            style=filled;
+            color=lightyellow;
+            
+            apply_test_init [label="Terraform Init\n(Backend İle)"];
+            apply_test_download [label="Plan Dosyasını İndir"];
+            apply_test_apply [label="Terraform Apply\n(Test Ortamı)"];
+            
+            apply_test_download -> apply_test_init -> apply_test_apply;
+        }
+        
+        // Plan Stage - Prod
+        subgraph cluster_plan_prod {
+            label="Plan Stage - Prod";
+            style=filled;
+            color=lightgreen;
+            
+            plan_prod_init [label="Terraform Init\n(Backend İle)"];
+            plan_prod [label="Terraform Plan\n(Prod Ortamı)"];
+            plan_prod_artifact [label="Plan Dosyasını\nArtifact Olarak Kaydet"];
+            
+            plan_prod_init -> plan_prod -> plan_prod_artifact;
+        }
+        
+        // Apply Stage - Prod
+        subgraph cluster_apply_prod {
+            label="Apply Stage - Prod";
+            style=filled;
+            color=lightyellow;
+            
+            apply_prod_init [label="Terraform Init\n(Backend İle)"];
+            apply_prod_download [label="Plan Dosyasını İndir"];
+            apply_prod_apply [label="Terraform Apply\n(Prod Ortamı)"];
+            
+            apply_prod_download -> apply_prod_init -> apply_prod_apply;
+        }
+        
+        // Stage dependencies
+        validate_validate -> plan_init [ltail=cluster_validate, lhead=cluster_plan_dev];
+        plan_artifact -> apply_dev_download [ltail=cluster_plan_dev, lhead=cluster_apply_dev];
+        apply_dev_apply -> plan_test_init [ltail=cluster_apply_dev, lhead=cluster_plan_test];
+        plan_test_artifact -> apply_test_download [ltail=cluster_plan_test, lhead=cluster_apply_test];
+        apply_test_apply -> plan_prod_init [ltail=cluster_apply_test, lhead=cluster_plan_prod];
+        plan_prod_artifact -> apply_prod_download [ltail=cluster_plan_prod, lhead=cluster_apply_prod];
+    }
+    
+    // External components
+    subgraph cluster_external {
+        label="External Components";
+        style=filled;
+        color=lightgrey;
+        
+        azure_devops [label="Azure DevOps", shape=ellipse, fillcolor=lightcoral];
+        azure_storage [label="Azure Storage\n(Terraform State)", shape=cylinder, fillcolor=lightcoral];
+        azure_resources [label="Azure Resources", shape=cloud, fillcolor=lightcoral];
+        
+        azure_devops -> azure_storage [label="State Yönetimi"];
+        azure_storage -> azure_resources [label="Durum Takibi"];
+    }
+    
+    // Connect pipeline to external components
+    plan_dev -> azure_storage [style=dashed, label="State Dosyası"];
+    apply_dev_apply -> azure_resources [style=dashed, label="Kaynak Oluşturma"];
+    apply_test_apply -> azure_resources [style=dashed, label="Kaynak Oluşturma"];
+    apply_prod_apply -> azure_resources [style=dashed, label="Kaynak Oluşturma"];
+}
