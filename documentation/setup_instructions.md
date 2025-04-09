@@ -63,7 +63,7 @@ To get the most out of this workshop, participants should have the following too
 
 4. **Clone the Workshop Repository**
    ```bash
-   git clone https://github.com/example/azure-workshop.git
+   git clone https://github.com/zenigmadev/workshop.git
    cd azure-workshop
    ```
    Note: The actual repository URL will be provided before the workshop.
@@ -73,6 +73,10 @@ To get the most out of this workshop, participants should have the following too
    az provider register --namespace Microsoft.ContainerService
    az provider register --namespace Microsoft.Network
    az provider register --namespace Microsoft.OperationalInsights
+   ```
+6. **Create Service Principal**
+   ```bash
+   az ad sp create-for-rbac
    ```
 
 ## Resource Requirements
