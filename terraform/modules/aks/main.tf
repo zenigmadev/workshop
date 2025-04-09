@@ -151,7 +151,6 @@ resource "azurerm_kubernetes_cluster" "main" {
     name                = "system"
     vm_size             = "Standard_DS2_v2"
     zones               = ["1", "2", "3"]
-    auto_scaling_enabled  = true
     min_count           = 1
     max_count           = 3
     vnet_subnet_id      = var.aks_subnet_id
@@ -192,7 +191,6 @@ resource "azurerm_kubernetes_cluster_node_pool" "user" {
   kubernetes_cluster_id = azurerm_kubernetes_cluster.main.id
   vm_size               = "Standard_DS3_v2"
   zones                 = ["1", "2", "3"]
-  auto_scaling_enabled = true
   min_count             = 1
   max_count             = 5
   vnet_subnet_id        = var.aks_subnet_id
